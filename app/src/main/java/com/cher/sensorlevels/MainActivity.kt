@@ -8,6 +8,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.telephony.*
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +45,8 @@ import java.lang.Math.log10
 class MainActivity : ComponentActivity() {
 
     private val viewModel: SensorViewModel by viewModel()
+private var mEMA = 0
+    val EMA_FILTER = 0.6
 
 
     @RequiresApi(Build.VERSION_CODES.M)
@@ -240,8 +243,11 @@ class MainActivity : ComponentActivity() {
             mRecorder.maxAmplitude
             delay(500)
             mRecorder.maxAmplitude.let {
-                val volume = 20.0 * kotlin.math.log10(it / 10.0)
-                viewModel.updateMICLevel((volume / 100).toFloat())
+                if(it in 1..999999){
+                    updateAmplitudeEMA(it.toDouble())
+                    val volumeDb = convertdDb(it.toDouble())
+                    viewModel.updateMICLevel((volumeDb / 100).toFloat())
+                }
             }
         }
 
@@ -249,7 +255,23 @@ class MainActivity : ComponentActivity() {
         getFileStreamPath("musicfiles.3GPP").deleteOnExit()
     }
 
+    fun convertdDb(amplitude: Double): Double {
+        val EMA_FILTER = 0.6
+        // Cellphones can catch up to 90 db + -
+        // getMaxAmplitude returns a value between 0-32767 (in most phones). that means that if the maximum db is 90, the pressure
+        // at the microphone is 0.6325 Pascal.
+        // it does a comparison with the previous value of getMaxAmplitude.
+        // we need to divide maxAmplitude with (32767/0.6325)
+        //51805.5336 or if 100db so 46676.6381
+        val mEMAValue: Double = EMA_FILTER * amplitude + (1.0 - EMA_FILTER) * mEMA
+        //Assuming that the minimum reference pressure is 0.000085 Pascal (on most phones) is equal to 0 db
+        // samsung S10 0.000028251
+        return (20 * log10((mEMAValue / 46676.6381) / 0.000028251).toFloat()).toDouble()
+    }
 
+    fun updateAmplitudeEMA(amplitude: Double) {
+        mEMA = (EMA_FILTER * amplitude + (1.0 - EMA_FILTER) * mEMA).toInt()
+    }
     private fun checkAudioPermission(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 
