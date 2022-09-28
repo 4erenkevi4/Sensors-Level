@@ -7,7 +7,7 @@ import android.media.MediaRecorder
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.telephony.TelephonyManager
+import android.telephony.*
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,13 +22,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
-import androidx.compose.ui.Alignment.Companion.CenterVertically
-import androidx.compose.ui.Alignment.Companion.Top
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
@@ -42,6 +38,7 @@ import kotlinx.coroutines.launch
 import org.koin.androidx.viewmodel.ext.android.viewModel
 import java.io.File
 import java.io.IOException
+import java.lang.Math.log10
 
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +46,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: SensorViewModel by viewModel()
 
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @RequiresApi(Build.VERSION_CODES.M)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -67,7 +64,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @RequiresApi(Build.VERSION_CODES.M)
     @Composable
     private fun Greeting(context: Context, fl: Float?, isRepeat: Boolean = false) {
         val onclickState = remember {
@@ -78,6 +75,7 @@ class MainActivity : ComponentActivity() {
         val test3 = viewModel.gsmLevel.observeAsState()
         val test4 = viewModel.micVolumeLevel.observeAsState()
         val nameOperator = viewModel.operatorName.observeAsState()
+        val dblevel = if (test.value != null) test.value!!.toInt() + 10 else null
         Column() {
             CreateCardInfo(
                 SensorTypes.GSM,
@@ -93,7 +91,8 @@ class MainActivity : ComponentActivity() {
                 SensorTypes.MIC,
                 test4.value ?: 0f,
                 startScanning = onclickState.value,
-                context = context
+                context = context,
+                description = if (test4.value!= null) "${((test4.value!!*100).toInt()) + 10} Db" else "10 Hz-24KHz "
             )
 
             Button(
@@ -125,10 +124,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @RequiresApi(Build.VERSION_CODES.M)
     private fun startScanning(context: Context) {
         viewModel.updateWifiLevel(getWifiLevel(context))
-        viewModel.updateGSMLevel(getGSMlevel(context))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            viewModel.updateGSMLevel(getGSMlevel(context))
+        } else {
+            viewModel.updateGSMLevel(getSignalStrength(context))
+        }
         getMicVolumeLevel(context)
     }
 
@@ -148,12 +151,46 @@ class MainActivity : ComponentActivity() {
         return result.toFloat()
     }
 
+    @Throws(SecurityException::class)
+    private fun getSignalStrength(context: Context): Float {
+        val telephonyManager = context.getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+        var strength: Float? = null
+        val cellInfos =
+            telephonyManager.allCellInfo //This will give info of all sims present inside your mobile
+        if (cellInfos != null) {
+            for (i in cellInfos.indices) {
+                if (cellInfos[i].isRegistered) {
+                    if (cellInfos[i] is CellInfoWcdma) {
+                        val cellInfoWcdma = cellInfos[i] as CellInfoWcdma
+                        val cellSignalStrengthWcdma = cellInfoWcdma.cellSignalStrength
+                        strength = cellSignalStrengthWcdma.dbm.toFloat()
+                    } else if (cellInfos[i] is CellInfoGsm) {
+                        val cellInfogsm = cellInfos[i] as CellInfoGsm
+                        val cellSignalStrengthGsm = cellInfogsm.cellSignalStrength
+                        strength = cellSignalStrengthGsm.dbm.toFloat()
+                    } else if (cellInfos[i] is CellInfoLte) {
+                        val cellInfoLte = cellInfos[i] as CellInfoLte
+                        val cellSignalStrengthLte = cellInfoLte.cellSignalStrength
+                        strength = cellSignalStrengthLte.dbm.toFloat()
+                    } else if (cellInfos[i] is CellInfoCdma) {
+                        val cellInfoCdma = cellInfos[i] as CellInfoCdma
+                        val cellSignalStrengthCdma = cellInfoCdma.cellSignalStrength
+                        strength = cellSignalStrengthCdma.dbm.toFloat()
+                    }
+                }
+            }
+        }
+        return strength ?: 0f
+    }
+
     @RequiresApi(Build.VERSION_CODES.M)
     private fun getMicVolumeLevel(context: Context) {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         ) {
-            getMicLevel(context)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                getMicLevel(context)
+            }
         } else {
             checkAudioPermission(context)
         }
@@ -165,7 +202,9 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestPermission()
         ) { isGranted ->
             if (isGranted) {
-                getMicLevel(this)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    getMicLevel(this)
+                }
             } else {
                 Toast.makeText(
                     this,
@@ -175,11 +214,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun getMicLevel(context: Context) {
+        val BASE_VOLUME: Double = 125.0
+
         val mRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(context)
         } else {
-            return
+            MediaRecorder()
         }
         mRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
         mRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP)
@@ -195,11 +237,12 @@ class MainActivity : ComponentActivity() {
         }
         mRecorder.start()
         lifecycleScope.launch {
-            delay(500)
             mRecorder.maxAmplitude
-            delay(300)
-            val amplitude = mRecorder.maxAmplitude
-            viewModel.updateMICLevel(amplitude.toFloat() / 27000f)
+            delay(500)
+            mRecorder.maxAmplitude.let {
+                val volume = 20.0 * kotlin.math.log10(it / 10.0)
+                viewModel.updateMICLevel((volume / 100).toFloat())
+            }
         }
 
         mRecorder.pause()
@@ -221,7 +264,7 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @RequiresApi(Build.VERSION_CODES.M)
     @Composable
     fun CreateCardInfo(
         sensorType: SensorTypes,
@@ -263,7 +306,7 @@ class MainActivity : ComponentActivity() {
                         checked = checkedState.value,
                         onCheckedChange = { checkedState.value = it })
                 }
-                if(checkedState.value) {
+                if (checkedState.value) {
                     Row(modifier = Modifier.padding(horizontal = 16.dp)) {
 
                         LinearProgressIndicator(
@@ -411,14 +454,14 @@ class MainActivity : ComponentActivity() {
         MIC(
             imageId = R.drawable.ic_baseline_mic_24,
             sensorName = "Microphone",
-            description = "10 Hz - 24 Khz",
+            description = null,
             colorProgress = Color.Red,
             parametr = "db",
             signalLevel = 0.2f
         )
     }
 
-    @RequiresApi(Build.VERSION_CODES.P)
+    @RequiresApi(Build.VERSION_CODES.M)
     @Preview
     @Composable
     fun Preview() {
